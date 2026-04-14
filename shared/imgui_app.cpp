@@ -68,6 +68,11 @@ Index of this file:
 #define IMGUI_APP_DX11
 #endif
 
+#ifdef IMGUI_APP_WIN32_DX12
+#define IMGUI_APP_WIN32
+#define IMGUI_APP_DX12
+#endif
+
 #ifdef IMGUI_APP_SDL2_GL2
 #define IMGUI_APP_SDL2
 #define IMGUI_APP_GL2
@@ -103,6 +108,12 @@ static bool ImGuiApp_ImplGL_CaptureFramebuffer(ImGuiViewport* viewport, int x, i
 #endif
 #if defined(_MSC_VER) && defined(IMGUI_APP_GL2)
 #pragma comment(lib, "opengl32")  // Link with opengl32.lib. MinGW will require linking with '-lopengl32'
+#endif
+
+#if defined(_MSC_VER) && defined(IMGUI_APP_DX12)
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "dxguid.lib")
 #endif
 
 // Legacy version support
@@ -285,6 +296,492 @@ ImGuiApp* ImGuiApp_ImplNull_Create()
     intf->Destroy               = [](ImGuiApp* app) { delete (ImGuiApp_ImplNull*)app; };
     return intf;
 }
+
+
+//-----------------------------------------------------------------------------
+// [SECTION] ImGuiApp Implementation: Win32 + DX12
+//-----------------------------------------------------------------------------
+
+#ifdef IMGUI_APP_WIN32_DX12
+
+// Include
+#include "imgui_impl_dx12.h"
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <dxgidebug.h>
+#define DIRECTINPUT_VERSION 0x0800
+#include <dinput.h>
+#include <tchar.h>
+#include <stdlib.h>
+
+const INT NUM_FRAMES_IN_FLIGHT = 2;
+const DXGI_FORMAT SWAPCHAIN_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
+const DXGI_FORMAT RTV_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
+// Data
+struct ImGuiApp_ImplWin32DX12 : public ImGuiApp
+{
+    HWND          Hwnd = NULL;
+    WNDCLASSEXW   WC = {};
+    RECT          WindowRect = {};
+    ID3D12Device* pd3dDevice = NULL;
+
+    ID3D12CommandQueue*        pd3dCommandQueue = NULL;
+    ID3D12GraphicsCommandList* pd3dCommandList = NULL;
+    ID3D12CommandAllocator*    pd3dCommandAllocator = NULL;
+
+    ID3D12Fence* pd3dFence = NULL;
+    UINT64 fenceIndex;
+    HANDLE fenceEvent;
+
+    ID3D12DescriptorHeap* pd3dSRVDescriptorHeap = NULL;
+    ID3D12DescriptorHeap* pd3dRTVDescriptorHeap = NULL;
+
+    IDXGISwapChain4* pSwapChain = NULL;
+    ID3D12Resource*  pd3dScreenRenderTexture[NUM_FRAMES_IN_FLIGHT]{};
+};
+
+// Forward declarations of helper functions
+static bool CreateDeviceD3D(ImGuiApp_ImplWin32DX12* app);
+static void CleanupDeviceD3D(ImGuiApp_ImplWin32DX12* app);
+static void CreateCommand(ImGuiApp_ImplWin32DX12* app);
+static void CreateDescriptorHeap(ImGuiApp_ImplWin32DX12* app);
+static void CreateRenderTarget(ImGuiApp_ImplWin32DX12* app);
+static void CleanupRenderTarget(ImGuiApp_ImplWin32DX12* app);
+static ImGuiApp* g_AppForWndProc = NULL;
+static LRESULT WINAPI ImGuiApp_ImplWin32_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+static bool ImGuiApp_ImplWin32DX12_InitCreateWindow(ImGuiApp* app_opaque, const char* window_title_a, ImVec2 window_size)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    if (app->DpiAware)
+        ImGui_ImplWin32_EnableDpiAwareness();
+
+    // Create application window
+    app->WC = { sizeof(app->WC), CS_CLASSDC, ImGuiApp_ImplWin32_WndProc, 0L, 0L, ::GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"ImGuiApp", NULL };
+    ::RegisterClassExW(&app->WC);
+
+    POINT pos = { 1, 1 };
+    HMONITOR monitor = ::MonitorFromPoint(pos, 0);
+    float dpi_scale = app->DpiAware ? ImGui_ImplWin32_GetDpiScaleForMonitor(monitor) : 1.0f;
+    window_size.x = ImFloor(window_size.x * dpi_scale);
+    window_size.y = ImFloor(window_size.y * dpi_scale);
+
+    // Center in monitor
+    MONITORINFO monitor_info = { };
+    monitor_info.cbSize = sizeof(MONITORINFO);
+    if (::GetMonitorInfo(monitor, &monitor_info))
+    {
+        pos.x = monitor_info.rcWork.left + ImMax((LONG)0, ((monitor_info.rcWork.right - monitor_info.rcWork.left) - (LONG)window_size.x) / 2);
+        pos.y = monitor_info.rcWork.top + ImMax((LONG)0, ((monitor_info.rcWork.bottom - monitor_info.rcWork.top) - (LONG)window_size.y) / 2);
+    }
+
+    app->WindowRect = { pos.x, pos.y, pos.x + (LONG)window_size.x, pos.y + (LONG)window_size.y };
+
+    const int count = ::MultiByteToWideChar(CP_UTF8, 0, window_title_a, -1, NULL, 0);
+    WCHAR* window_title_t = (WCHAR*)calloc(count, sizeof(WCHAR));
+    if (!::MultiByteToWideChar(CP_UTF8, 0, window_title_a, -1, window_title_t, count))
+    {
+        free(window_title_t);
+        return false;
+    }
+    app->Hwnd = ::CreateWindowExW(0L, app->WC.lpszClassName, window_title_t, WS_OVERLAPPEDWINDOW, pos.x, pos.y, (int)window_size.x, (int)window_size.y, NULL, NULL, app->WC.hInstance, NULL);
+    free(window_title_t);
+
+    // Initialize Direct3D
+    if (!CreateDeviceD3D(app))
+    {
+        CleanupDeviceD3D(app);
+        ::UnregisterClassW(app->WC.lpszClassName, app->WC.hInstance);
+        return 1;
+    }
+
+    // Show the window
+    g_AppForWndProc = app;
+    ::ShowWindow(app->Hwnd, SW_SHOWDEFAULT);
+    ::UpdateWindow(app->Hwnd);
+    g_AppForWndProc = NULL;
+
+    app->DpiScale = app->DpiAware ? ImGui_ImplWin32_GetDpiScaleForHwnd(app->Hwnd) : 1.0f;
+
+    return true;
+}
+
+static void ImGuiApp_ImplWin32DX12_ShutdownCloseWindow(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    CleanupDeviceD3D(app);
+    ::DestroyWindow(app->Hwnd);
+    ::UnregisterClassW(app->WC.lpszClassName, app->WC.hInstance);
+}
+
+static void ImGuiApp_ImplWin32DX12_InitBackends(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    ImGui_ImplWin32_Init(app->Hwnd);
+
+    ImGui_ImplDX12_InitInfo init_info;
+    init_info.Device = app->pd3dDevice;
+    init_info.CommandQueue = app->pd3dCommandQueue;
+    init_info.NumFramesInFlight = NUM_FRAMES_IN_FLIGHT;
+    init_info.RTVFormat = SWAPCHAIN_FORMAT;
+    init_info.SrvDescriptorHeap = app->pd3dSRVDescriptorHeap;
+    init_info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outHandleCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outHandleGpu) {
+        static auto heapStartCPU = info->SrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+        static auto heapStartGPU = info->SrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+        static auto incrementSize = info->Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        static auto heapIndex = 0;
+        outHandleCpu->ptr = heapStartCPU.ptr + incrementSize * heapIndex;
+        outHandleGpu->ptr = heapStartGPU.ptr + incrementSize * heapIndex;
+        heapIndex++;
+    };
+    init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE) {
+    };
+
+    ImGui_ImplDX12_Init(&init_info);
+#ifdef IMGUI_HAS_VIEWPORT
+    ImGuiIO& io = ImGui::GetIO();
+    if (app->MockViewports && (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+        ImGuiApp_InstallMockViewportsBackend(app);
+#endif
+}
+
+static void ImGuiApp_ImplWin32DX12_ShutdownBackends(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    IM_UNUSED(app);
+    ImGui_ImplDX12_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+}
+
+static bool ImGuiApp_ImplWin32DX12_NewFrame(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    app->DpiScale = ImGui_ImplWin32_GetDpiScaleForHwnd(app->Hwnd);
+
+    g_AppForWndProc = app;
+    MSG msg;
+    ZeroMemory(&msg, sizeof(msg));
+    while (::PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
+    {
+        ::TranslateMessage(&msg);
+        ::DispatchMessage(&msg);
+        if (msg.message == WM_QUIT)
+        {
+            g_AppForWndProc = NULL;
+            return false;
+        }
+    }
+    g_AppForWndProc = NULL;
+
+    // Start the Dear ImGui frame
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+
+    return true;
+}
+
+static void ImGuiApp_ImplWin32DX12_Render(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+
+    // Update and Render additional Platform Windows
+
+    ID3D12DescriptorHeap* descriptorHeaps[] = { app->pd3dSRVDescriptorHeap };
+    app->pd3dCommandList->SetDescriptorHeaps(1, descriptorHeaps);
+
+#ifdef IMGUI_HAS_VIEWPORT
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
+#endif
+
+    // Render main viewport
+    int back_buffer_index = (ImGui::GetFrameCount() + 1) % NUM_FRAMES_IN_FLIGHT;
+    ID3D12Resource* render_target = app->pd3dScreenRenderTexture[back_buffer_index];
+    {
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = render_target;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        app->pd3dCommandList->ResourceBarrier(1, &barrier);
+    }
+
+    static D3D12_CPU_DESCRIPTOR_HANDLE heapStartCPU = app->pd3dRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    static UINT incrementSize = app->pd3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle{heapStartCPU.ptr + back_buffer_index * incrementSize };
+    app->pd3dCommandList->OMSetRenderTargets(1, &rtvHandle, false, NULL);
+    RECT rect = { 0, 0, (LONG)(app->WindowRect.right - app->WindowRect.left), (LONG)(app->WindowRect.bottom - app->WindowRect.top) };
+    app->pd3dCommandList->ClearRenderTargetView(rtvHandle, (float*)&app->ClearColor, 1, &rect);
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), app->pd3dCommandList);
+
+    {
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = render_target;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        app->pd3dCommandList->ResourceBarrier(1, &barrier);
+    }
+
+    app->pd3dCommandList->Close();
+    ID3D12CommandList* commandLists[] = { app->pd3dCommandList };
+    app->pd3dCommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+
+    // Present
+    if (app->Vsync)
+        app->pSwapChain->Present(1, 0);
+    else
+        app->pSwapChain->Present(0, 0);
+
+    ++app->fenceIndex;
+    app->pd3dCommandQueue->Signal(app->pd3dFence, app->fenceIndex);
+    // ----------シグナルまで到達してるか----------
+    if (app->pd3dFence->GetCompletedValue() < app->fenceIndex) {
+        app->pd3dFence->SetEventOnCompletion(app->fenceIndex, app->fenceEvent);
+        // 終わるまで待つ
+        WaitForSingleObject(app->fenceEvent, INFINITE);
+    }
+
+    app->pd3dCommandAllocator->Reset();
+    app->pd3dCommandList->Reset(app->pd3dCommandAllocator, nullptr);
+}
+
+static bool ImGuiApp_ImplWin32DX12_CaptureFramebuffer(ImGuiApp* app_opaque, ImGuiViewport* viewport, int x, int y, int w, int h, unsigned int* pixels_rgba, void* user_data)
+{
+    IM_UNUSED(app_opaque);
+    IM_UNUSED(viewport);
+    IM_UNUSED(x);
+    IM_UNUSED(y);
+    IM_UNUSED(w);
+    IM_UNUSED(h);
+    IM_UNUSED(pixels_rgba);
+    IM_UNUSED(user_data);
+    return false;
+}
+
+static void ImGuiApp_ImplWin32DX12_Destroy(ImGuiApp* app_opaque)
+{
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)app_opaque;
+    delete app;
+}
+
+ImGuiApp* ImGuiApp_ImplWin32DX12_Create()
+{
+    ImGuiApp* intf = new ImGuiApp_ImplWin32DX12();
+    intf->InitCreateWindow = ImGuiApp_ImplWin32DX12_InitCreateWindow;
+    intf->InitBackends = ImGuiApp_ImplWin32DX12_InitBackends;
+    intf->NewFrame = ImGuiApp_ImplWin32DX12_NewFrame;
+    intf->Render = ImGuiApp_ImplWin32DX12_Render;
+    intf->ShutdownCloseWindow = ImGuiApp_ImplWin32DX12_ShutdownCloseWindow;
+    intf->ShutdownBackends = ImGuiApp_ImplWin32DX12_ShutdownBackends;
+    intf->CaptureFramebuffer = ImGuiApp_ImplWin32DX12_CaptureFramebuffer;
+    intf->Destroy = ImGuiApp_ImplWin32DX12_Destroy;
+    return intf;
+}
+
+// Helper functions
+static bool CreateDeviceD3D(ImGuiApp_ImplWin32DX12* app)
+{
+    ID3D12Debug1* debugController;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+        debugController->EnableDebugLayer();
+        debugController->SetEnableGPUBasedValidation(true);
+        debugController->Release();
+    }
+
+    IDXGIFactory7* dxgiFactory = NULL;
+    CreateDXGIFactory(IID_PPV_ARGS(&dxgiFactory));
+
+    IDXGIAdapter4* useAdapter = NULL;
+    for (UINT i = 0; dxgiFactory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&useAdapter)) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC3 adapterDesc{};
+        useAdapter->GetDesc3(&adapterDesc);
+        // skip software adapter
+        if (!(adapterDesc.Flags & DXGI_ADAPTER_FLAG3_SOFTWARE)) {
+            break;
+        }
+        useAdapter = nullptr;
+    }
+
+    D3D_FEATURE_LEVEL featureLevel[] = {
+        D3D_FEATURE_LEVEL_12_2,D3D_FEATURE_LEVEL_12_1,D3D_FEATURE_LEVEL_12_0
+    };
+    // 高い順に試す
+    for (size_t i = 0; i < _countof(featureLevel); ++i) {
+        D3D12CreateDevice(useAdapter, featureLevel[i], IID_PPV_ARGS(&app->pd3dDevice));
+        if(useAdapter) {
+            break;
+        }
+    }
+
+    ID3D12InfoQueue* infoQueue;
+    if (SUCCEEDED(app->pd3dDevice->QueryInterface(IID_PPV_ARGS(&infoQueue)))) {
+        infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
+        infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
+        infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
+        D3D12_MESSAGE_ID denyIds[] = {
+            // avoid conflict between DXGI debug layer and D3D12 debug layer on Windows 11
+            // https://stackoverflow.com/questions/69805245/directx-12-application-is-crashing-in-windows-11
+            D3D12_MESSAGE_ID_RESOURCE_BARRIER_MISMATCHING_COMMAND_LIST_TYPE
+        };
+        D3D12_MESSAGE_SEVERITY severities[] = { D3D12_MESSAGE_SEVERITY_INFO };
+        D3D12_INFO_QUEUE_FILTER filter{};
+        filter.DenyList.NumIDs = _countof(denyIds);
+        filter.DenyList.pIDList = denyIds;
+        filter.DenyList.NumSeverities = _countof(severities);
+        filter.DenyList.pSeverityList = severities;
+        // 適用
+        infoQueue->PushStorageFilter(&filter);
+
+        infoQueue->Release();
+    }
+
+    // Setup command
+    CreateCommand(app);
+
+    // Setup descriptor heaps
+    CreateDescriptorHeap(app);
+
+    // ---------- create swap chain ----------
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
+    swapChainDesc.Width = app->WindowRect.right - app->WindowRect.left;
+    swapChainDesc.Height = app->WindowRect.bottom - app->WindowRect.top;
+    swapChainDesc.Format = SWAPCHAIN_FORMAT;
+    swapChainDesc.SampleDesc.Count = 1;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.BufferCount = NUM_FRAMES_IN_FLIGHT;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.Scaling = DXGI_SCALING_NONE;
+    //swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    dxgiFactory->CreateSwapChainForHwnd(app->pd3dCommandQueue, app->Hwnd, &swapChainDesc, nullptr, nullptr, reinterpret_cast<IDXGISwapChain1**>(&app->pSwapChain));
+
+    dxgiFactory->Release();
+
+    CreateRenderTarget(app);
+
+    return true;
+}
+
+static void CleanupDeviceD3D(ImGuiApp_ImplWin32DX12* app)
+{
+    CleanupRenderTarget(app);
+    if (app->pSwapChain)        { app->pSwapChain->Release(); app->pSwapChain = NULL; }
+
+    if (app->pd3dRTVDescriptorHeap) { app->pd3dRTVDescriptorHeap->Release(); app->pd3dRTVDescriptorHeap = NULL; }
+    if (app->pd3dSRVDescriptorHeap) { app->pd3dSRVDescriptorHeap->Release(); app->pd3dSRVDescriptorHeap = NULL; }
+
+    if (app->pd3dFence) { app->pd3dFence->Release(); app->pd3dFence = NULL; }
+    if (app->pd3dCommandList) { app->pd3dCommandList->Release(); app->pd3dCommandList = NULL; }
+    if (app->pd3dCommandAllocator) { app->pd3dCommandAllocator->Release(); app->pd3dCommandAllocator = NULL; }
+    if (app->pd3dCommandQueue) { app->pd3dCommandQueue->Release(); app->pd3dCommandQueue = NULL; }
+
+    if (app->pd3dDevice)        { app->pd3dDevice->Release(); app->pd3dDevice = NULL; }
+    IDXGIDebug1* debug;
+    if (SUCCEEDED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&debug)))) {
+        debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
+        debug->ReportLiveObjects(DXGI_DEBUG_APP, DXGI_DEBUG_RLO_ALL);
+        debug->ReportLiveObjects(DXGI_DEBUG_D3D12, DXGI_DEBUG_RLO_ALL);
+        debug->Release();
+    }
+}
+
+static void CreateCommand(ImGuiApp_ImplWin32DX12* app)
+{
+
+    HRESULT hr;
+    D3D12_COMMAND_QUEUE_DESC commandQueueDesc{};
+    hr = app->pd3dDevice->CreateCommandQueue(&commandQueueDesc, IID_PPV_ARGS(&app->pd3dCommandQueue));
+
+    hr = app->pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&app->pd3dCommandAllocator));
+
+    hr = app->pd3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, app->pd3dCommandAllocator, nullptr, IID_PPV_ARGS(&app->pd3dCommandList));
+
+    app->pd3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&app->pd3dFence));
+    app->fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    app->fenceIndex = 0;
+}
+
+static void CreateDescriptorHeap(ImGuiApp_ImplWin32DX12* app)
+{
+    HRESULT hr;
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
+    srvHeapDesc.NumDescriptors = 1000;
+    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hr = app->pd3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&app->pd3dSRVDescriptorHeap));
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
+    rtvHeapDesc.NumDescriptors = NUM_FRAMES_IN_FLIGHT;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hr = app->pd3dDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&app->pd3dRTVDescriptorHeap));
+}
+
+static void CreateRenderTarget(ImGuiApp_ImplWin32DX12* app)
+{
+    auto heapStartCPU = app->pd3dRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    auto incrementSize = app->pd3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+    for (int i = 0; i < NUM_FRAMES_IN_FLIGHT; ++i) {
+        ID3D12Resource* resource;
+        app->pSwapChain->GetBuffer(i, IID_PPV_ARGS(&resource));
+
+        // ---------- create RTV ----------
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+        rtvDesc.Format = RTV_FORMAT;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle{};
+        rtvHandle.ptr = heapStartCPU.ptr + incrementSize * i;
+        app->pd3dDevice->CreateRenderTargetView(resource, &rtvDesc, rtvHandle);
+
+        app->pd3dScreenRenderTexture[i] = resource;
+    }
+}
+
+void CleanupRenderTarget(ImGuiApp_ImplWin32DX12* app)
+{
+    if (app->pd3dScreenRenderTexture[0]) { app->pd3dScreenRenderTexture[0]->Release(); app->pd3dScreenRenderTexture[0] = NULL; }
+    if (app->pd3dScreenRenderTexture[1]) { app->pd3dScreenRenderTexture[1]->Release(); app->pd3dScreenRenderTexture[1] = NULL; }
+}
+
+// Win32 message handler
+extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static LRESULT WINAPI ImGuiApp_ImplWin32_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+        return true;
+
+    ImGuiApp_ImplWin32DX12* app = (ImGuiApp_ImplWin32DX12*)g_AppForWndProc;
+    switch (msg)
+    {
+    case WM_SIZE:
+        if (app->pd3dDevice != NULL && wParam != SIZE_MINIMIZED)
+        {
+            CleanupRenderTarget(app);
+            app->pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), SWAPCHAIN_FORMAT, 0);
+            CreateRenderTarget(app);
+        }
+        return 0;
+    case WM_SYSCOMMAND:
+        if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
+            return 0;
+        break;
+    case WM_DESTROY:
+        ::PostQuitMessage(0);
+        return 0;
+    }
+    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+#endif // #ifdef IMGUI_APP_WIN32_DX12
 
 
 //-----------------------------------------------------------------------------

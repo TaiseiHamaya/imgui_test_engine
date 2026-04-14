@@ -1,7 +1,7 @@
 
 // Enable graphics backends for imgui_app.h/cpp (otherwise this will compile as a command-line app)
 #ifdef _WIN32
-#define IMGUI_APP_WIN32_DX11
+#define IMGUI_APP_WIN32_DX12
 #endif
 
 // Disable legacy features / enforce using latest

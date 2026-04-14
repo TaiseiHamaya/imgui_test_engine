@@ -85,6 +85,13 @@ ImGuiApp* ImGuiApp_ImplGlfwGL3_Create();
 #endif
 #endif
 
+#ifdef IMGUI_APP_WIN32_DX12
+ImGuiApp* ImGuiApp_ImplWin32DX12_Create();
+#ifndef ImGuiApp_ImplDefault_Create
+#define ImGuiApp_ImplDefault_Create ImGuiApp_ImplWin32DX12_Create
+#endif
+#endif
+
 // Dummy/Null Backend (last one in list so its only the default when there are no other backends compiled in)
 ImGuiApp* ImGuiApp_ImplNull_Create();
 #ifndef ImGuiApp_ImplDefault_Create
@@ -105,6 +112,11 @@ ImGuiApp* ImGuiApp_ImplNull_Create();
 #if defined(IMGUI_APP_WIN32_DX11)
 #include "imgui_impl_win32.cpp"
 #include "imgui_impl_dx11.cpp"
+#endif
+
+#if defined(IMGUI_APP_WIN32_DX12)
+#include "imgui_impl_win32.cpp"
+#include "imgui_impl_dx12.cpp"
 #endif
 
 // Renderer before Platform backends because SDL/GLFW tend to have their own GL stuff which can conflict.
