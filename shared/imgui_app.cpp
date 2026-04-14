@@ -424,7 +424,8 @@ static void ImGuiApp_ImplWin32DX12_InitBackends(ImGuiApp* app_opaque)
     init_info.Device = app->pd3dDevice;
     init_info.CommandQueue = app->pd3dCommandQueue;
     init_info.NumFramesInFlight = NUM_FRAMES_IN_FLIGHT;
-    init_info.RTVFormat = SWAPCHAIN_FORMAT;
+    init_info.RTVFormat = RTV_FORMAT;
+    //init_info.SwapChainFormat = SWAPCHAIN_FORMAT;
     init_info.SrvDescriptorHeap = app->pd3dSRVDescriptorHeap;
     init_info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outHandleCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outHandleGpu) {
         static auto heapStartCPU = info->SrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
