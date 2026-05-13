@@ -255,8 +255,11 @@ static void ImGuiApp_ImplNull_RenderDrawData(ImDrawData* draw_data)
             const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
             if (pcmd->UserCallback != NULL)
             {
-                if (pcmd->UserCallback != ImDrawCallback_ResetRenderState)
-                    pcmd->UserCallback(cmd_list, pcmd);
+#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+                if (pcmd->UserCallback == ImDrawCallback_ResetRenderState)
+                    continue;
+#endif
+                pcmd->UserCallback(cmd_list, pcmd);
             }
         }
     }
@@ -2102,7 +2105,11 @@ static void ImGuiApp_InstallMockViewportsBackend(ImGuiApp*)
         if (viewport != main_viewport)
         {
             ImRect r = ((ImGuiViewportP*)viewport)->GetMainRect();
+#if IMGUI_VERSION_NUM < 19276
             ImGui::GetForegroundDrawList(main_viewport)->AddRect(r.Min, r.Max, IM_COL32(255, 0, 0, 255), 0.0f, ImDrawFlags_None, 3.0f);
+#else
+            ImGui::GetForegroundDrawList(main_viewport)->AddRect(r.Min, r.Max, IM_COL32(255, 0, 0, 255), 0.0f, 3.0f);
+#endif
         }
     };
     platform_io.Platform_RenderWindow = NULL;

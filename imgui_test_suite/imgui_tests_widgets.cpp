@@ -888,7 +888,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiTestGenericVars& vars = ctx->GenericVars;
         ImGui::Begin("Test Window", NULL, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
 
-        ImGui::SliderInt("Step", &vars.Step, 0, 6);
+        ImGui::SliderInt("Step", &vars.Step, 0, 8);
 
         bool ret = false;
         switch (vars.Step)
@@ -903,15 +903,21 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             ret = ImGui::SliderFloat("Slider", &vars.Float1, 0.0f, 1.0f);
             break;
         case 3:
-            ret = ImGui::Selectable("Selectable", &vars.Bool1);
+            ret = ImGui::InputFloat("InputFloat", &vars.Float1, 0.0f, 1.0f);
             break;
         case 4:
-            ret = ImGui::Combo("Combo", &vars.Int1, "Zero\0One\0Two\0\0");
+            ret = ImGui::InputFloat("InputFloat(enter)", &vars.Float1, 0.0f, 1.0f, nullptr, ImGuiInputTextFlags_EnterReturnsTrue);
             break;
         case 5:
-            ret = ImGui::ColorEdit4("ColorEdit", &vars.Color1.x);
+            ret = ImGui::Selectable("Selectable", &vars.Bool1);
             break;
         case 6:
+            ret = ImGui::Combo("Combo", &vars.Int1, "Zero\0One\0Two\0\0");
+            break;
+        case 7:
+            ret = ImGui::ColorEdit4("ColorEdit", &vars.Color1.x);
+            break;
+        case 8:
             ImGui::Text("Text Without An Identifier");
             break;
         }
@@ -930,12 +936,18 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         // Testing activation flag being set
         ctx->SetRef("Test Window");
 
-        const char* item_names[6] = { "Button", "Checkbox", "Slider", "Selectable", "Combo", "ColorEdit##X" };
-        for (int step = 0; step < 6; step++)
+        const char* item_names[8] = { "Button", "Checkbox", "Slider", "InputFloat", "InputFloat(enter)", "Selectable", "Combo", "ColorEdit##X" };
+        for (int step = 0; step < 8; step++)
         {
+            const bool is_input = (step == 3 || step == 4);
             vars.Step = step;
+            vars.Float1 = 0.0f;
             ctx->Yield(2);
             status.Clear();
+#if IMGUI_VERSION_NUM < 19275
+            if (step == 4) // ImGuiInputTextFlags_EnterReturnsTrue
+                continue;
+#endif
 
             ctx->MouseMove(item_names[step]);
             IM_CHECK(status.RetValue == 0 && status.Activated == 0 && status.Deactivated == 0 && status.DeactivatedAfterEdit == 0 && status.Edited == 0);
@@ -947,16 +959,21 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             ctx->Yield();
             IM_CHECK(status.Hovered == 1);
 
-            if (step == 2 || step == 5)
+            if (step == 2 || step == 7)
             {
                 ctx->MouseMove(item_names[step], ImGuiTestOpFlags_MoveToEdgeL);
                 ctx->MouseMove(item_names[step], ImGuiTestOpFlags_MoveToEdgeR);
             }
 
             ctx->MouseUp();
+            if (is_input)
+            {
+                ctx->KeyChars("123"); // Edit
+                ctx->KeyPress(ImGuiKey_Enter);
+            }
             IM_CHECK(status.Activated == 0 && status.Deactivated == 1);
 
-            if (step == 4)
+            if (step == 6)
             {
                 ctx->ComboClick("Combo/One");
                 ctx->ComboClick("Combo/Two");
@@ -966,7 +983,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             }
 
 #if (IMGUI_VERSION_NUM > 19165) && (IMGUI_VERSION_NUM < 19181)
-            if (step == 1 || step == 3) // Checkbox(), Selectable() were broken (#8370)
+            if (step == 1 || step == 5) // Checkbox(), Selectable() were broken (#8370)
                 continue;
 #endif
 
@@ -974,7 +991,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
                 IM_CHECK(status.DeactivatedAfterEdit == 1);
         }
 
-        // Step 6: Text (item with no identifier) (#8883, #8877)
+        // Step 8: Text (item with no identifier) (#8883, #8877)
 #if IMGUI_VERSION_NUM >= 19222
         {
             vars.Step = 6;
@@ -1184,6 +1201,10 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             ImGui::InputTextMultiline("Field", vars.Str1, IM_COUNTOF(vars.Str1));
         else if (vars.Step == 2)
             ret = ImGui::SliderFloat3("Slider3", &vars.Color1.x, 0.0f, 1.0f);
+        else if (vars.Step == 3)
+            ret = ImGui::InputFloat3("InputFloat3", &vars.Color1.x, nullptr);
+        else if (vars.Step == 4)
+            ret = ImGui::InputFloat3("InputFloat3", &vars.Color1.x, nullptr, ImGuiInputTextFlags_EnterReturnsTrue);
         vars.Status.QueryInc(ret);
 
         bool is_item_activated = ImGui::IsItemActivated();
@@ -1226,19 +1247,28 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiContext& g = *GImGui;
 
         ctx->SetRef("Test Window");
-        for (int step = 0; step < 3; step++)
+        for (int step = 0; step < 5; step++)
         {
             vars.Step = step;
+#if IMGUI_VERSION_NUM < 19275
+            if (step == 4) // ImGuiInputTextFlags_EnterReturnsTrue
+                continue;
+#endif
+
             const int substeps_count = (step == 2) ? 10 : 8;
             for (int substep = 0; substep < substeps_count; substep++)
             {
                 ctx->LogDebug("Step %d,%d", vars.Step, substep);
                 vars.Str1[0] = 0;
                 vars.Color1 = ImVec4();
+                const bool is_input = (step == 3 || step == 4);
+                IM_UNUSED(is_input);
                 ctx->Yield();
 
                 if (step == 2)
                     ctx->ItemInput("Slider3/$$1");
+                else if (step == 3 || step == 4)
+                    ctx->ItemInput("InputFloat3/$$1");
                 else
                     ctx->ItemInput("Field");
                 ctx->KeyChars("0.5");
@@ -1258,8 +1288,8 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
                     IM_CHECK_NE(g.ActiveId, 0u); // Tabbed
                 else
                     IM_CHECK_EQ(g.ActiveId, 0u); // Interrupted
-                if (step == 2)
-                    IM_CHECK_EQ(vars.Color1.y, 0.5f); // SliderFloat3
+                if (step == 2 || step == 3 || step == 4)
+                    IM_CHECK_EQ(vars.Color1.y, 0.5f); // SliderFloat3, InputFloat3
                 else
                     IM_CHECK_STR_EQ(vars.Str1, "0.5"); // InputText/InputTextMultiline
                 if (substep == 6 || substep == 7)
@@ -1275,7 +1305,8 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
     {
         ImGuiTestGenericVars& vars = ctx->GenericVars;
         ImGui::Begin("Test Window", NULL, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
-        bool ret = ImGui::InputFloat4("Field", &vars.FloatArray[0]);
+        ImGui::CheckboxFlags("ImGuiInputTextFlags_EnterReturnsTrue", &vars.InputTextFlags, ImGuiInputTextFlags_EnterReturnsTrue);
+        bool ret = ImGui::InputFloat4("Field", &vars.FloatArray[0], nullptr, vars.InputTextFlags);
         vars.Status.QueryInc(ret);
         ImGui::End();
     };
@@ -1290,44 +1321,69 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiID field_1 = ctx->GetID("Field/$$1");
         //ImGuiID field_2 = ctx->GetID("Field/$$2"));
 
-        // Testing activation/deactivation flags
-        ctx->ItemClick(field_0);
-        IM_CHECK(status.RetValue == 0 && status.Activated == 1 && status.Deactivated == 0 && status.DeactivatedAfterEdit == 0);
-        status.Clear();
-        ctx->KeyPress(ImGuiKey_Enter);
-        IM_CHECK(status.RetValue == 0 && status.Activated == 0 && status.Deactivated == 1 && status.DeactivatedAfterEdit == 0);
-        status.Clear();
+        for (int step = 0; step < 2; step++)
+        {
+            vars.Clear();
+            vars.InputTextFlags = (step == 0) ? ImGuiInputTextFlags_None : ImGuiInputTextFlags_EnterReturnsTrue;
+#if IMGUI_VERSION_NUM < 19275
+            if (flags & ImGuiInputTextFlags_EnterReturnsTrue)
+                continue;
+#endif
+            ctx->Yield();
 
-        // Testing validation with Return after editing
-        ctx->ItemClick(field_0);
-        status.Clear();
-        ctx->KeyCharsAppend("123");
-        IM_CHECK(status.RetValue >= 1 && status.Activated == 0 && status.Deactivated == 0);
-        status.Clear();
-        ctx->KeyPress(ImGuiKey_Enter);
-        IM_CHECK(status.RetValue == 0 && status.Activated == 0 && status.Deactivated == 1);
-        status.Clear();
+            // Testing activation/deactivation flags
+            ctx->ItemClick(field_0);
+            IM_CHECK(status.RetValue == 0 && status.Activated == 1 && status.Deactivated == 0 && status.DeactivatedAfterEdit == 0);
+            status.Clear();
+            ctx->KeyPress(ImGuiKey_Enter);
+            if (vars.InputTextFlags & ImGuiInputTextFlags_EnterReturnsTrue)
+                IM_CHECK(status.RetValue == 1);
+            else
+                IM_CHECK(status.RetValue == 0);
+            IM_CHECK(status.Activated == 0 && status.Deactivated == 1 && status.DeactivatedAfterEdit == 0);
+            status.Clear();
 
-        // Testing validation with Tab after editing
-        ctx->ItemClick(field_0);
-        ctx->KeyCharsAppend("456");
-        status.Clear();
-        ctx->KeyPress(ImGuiKey_Tab);
-        IM_CHECK(status.RetValue == 0 && status.Activated == 1 && status.Deactivated == 1 && status.DeactivatedAfterEdit == 1);
+            // Testing validation with Return after editing
+            ctx->ItemClick(field_0);
+            status.Clear();
+            ctx->KeyCharsAppend("123");
+            if (vars.InputTextFlags & ImGuiInputTextFlags_EnterReturnsTrue)
+                IM_CHECK(status.RetValue == 0);
+            else
+                IM_CHECK(status.RetValue >= 1);
+            IM_CHECK(status.Activated == 0 && status.Deactivated == 0 && status.Edited >= 1);
+            status.Clear();
+            ctx->KeyPress(ImGuiKey_Enter);
+            if (vars.InputTextFlags & ImGuiInputTextFlags_EnterReturnsTrue)
+                IM_CHECK(status.RetValue == 1);
+            else
+                IM_CHECK(status.RetValue == 0);
+            IM_CHECK(status.Activated == 0 && status.Deactivated == 1);
+            status.Clear();
 
-        // Testing Edited flag on all components
-        ctx->ItemClick(field_1); // FIXME-TESTS: Should not be necessary!
-        ctx->ItemClick(field_0);
-        ctx->KeyCharsAppend("111");
-        IM_CHECK(status.Edited >= 1);
-        ctx->KeyPress(ImGuiKey_Tab);
-        status.Clear();
-        ctx->KeyCharsAppend("222");
-        IM_CHECK(status.Edited >= 1);
-        ctx->KeyPress(ImGuiKey_Tab);
-        status.Clear();
-        ctx->KeyCharsAppend("333");
-        IM_CHECK(status.Edited >= 1);
+            // Testing validation with Tab after editing
+            ctx->ItemClick(field_0);
+            ctx->KeyCharsAppend("456");
+            status.Clear();
+            ctx->KeyPress(ImGuiKey_Tab);
+            IM_CHECK(status.RetValue == 0 && status.Activated == 1 && status.Deactivated == 1 && status.DeactivatedAfterEdit == 1);
+
+            // Testing Edited flag on all components
+            ctx->ItemClick(field_1); // FIXME-TESTS: Should not be necessary!
+            ctx->ItemClick(field_0);
+            ctx->KeyCharsAppend("111");
+            IM_CHECK(status.Edited >= 1);
+            ctx->KeyPress(ImGuiKey_Tab);
+            status.Clear();
+            ctx->KeyCharsAppend("222");
+            IM_CHECK(status.Edited >= 1);
+            ctx->KeyPress(ImGuiKey_Tab);
+            status.Clear();
+            ctx->KeyCharsAppend("333");
+            IM_CHECK(status.Edited >= 1);
+
+            ctx->KeyPress(ImGuiKey_Escape);
+        }
     };
 
     // ## Test the IsItemEdited() function when input vs output format are not matching
@@ -1592,7 +1648,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
 
     // ## Check input of InputScalar().
     t = IM_REGISTER_TEST(e, "widgets", "widgets_inputscalar_input");
-    struct InputScalarStepVars { int Int = 0; float Float = 0.0f; double Double = 0.0; };
+    struct InputScalarStepVars { int Int = 0; float Float = 0.0f; double Double = 0.0; ImGuiInputTextFlags Flags = 0; };
     t->SetVarsDataType<InputScalarStepVars>();
     t->GuiFunc = [](ImGuiTestContext* ctx)
     {
@@ -1603,21 +1659,31 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGui::GetID("Float");
         ImGui::GetID("Double");
 #endif
-        ImGui::InputInt("Int", &vars.Int, 2);
-        ImGui::InputFloat("Float", &vars.Float, 1.5f);
-        ImGui::InputDouble("Double", &vars.Double, 1.5);
+        ImGui::InputInt("Int", &vars.Int, 2, 0, vars.Flags);
+        ImGui::InputFloat("Float", &vars.Float, 1.5f, 0.0f, nullptr, vars.Flags);
+        ImGui::InputDouble("Double", &vars.Double, 1.5, 0.0f, nullptr, vars.Flags);
         ImGui::End();
     };
     t->TestFunc = [](ImGuiTestContext* ctx)
     {
         InputScalarStepVars& vars = ctx->GetVars<InputScalarStepVars>();
         ctx->SetRef("Test Window");
-        ctx->ItemInputValue("Int", 42);
-        IM_CHECK(vars.Int == 42);
-        ctx->ItemInputValue("Float", 42.1f);
-        IM_CHECK(vars.Float == 42.1f);
-        ctx->ItemInputValue("Double", "123.456789");
-        IM_CHECK(vars.Double == 123.456789);
+        const ImGuiInputTextFlags flags_to_test[] = { ImGuiInputTextFlags_None, ImGuiInputTextFlags_EnterReturnsTrue };
+        for (ImGuiInputTextFlags flags : flags_to_test)
+        {
+            vars.Flags = flags;
+#if IMGUI_VERSION_NUM < 19275
+            if (flags == ImGuiInputTextFlags_EnterReturnsTrue)
+                continue;
+#endif
+            ctx->Yield();
+            ctx->ItemInputValue("Int", 42);
+            IM_CHECK(vars.Int == 42);
+            ctx->ItemInputValue("Float", 42.1f);
+            IM_CHECK(vars.Float == 42.1f);
+            ctx->ItemInputValue("Double", "123.456789");
+            IM_CHECK(vars.Double == 123.456789);
+        }
     };
 
     // ## Check step buttons of InputScalar().
@@ -1853,6 +1919,15 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             ctx->KeyCharsReplaceEnter("1236");
             IM_CHECK_STR_EQ(capture_widget_value(i), "{ 1236 }");
             IM_CHECK_EQ(vars.Int, 1236);
+#endif
+
+            // No % in format (e.g. #9385)
+#if IMGUI_VERSION_NUM >= 19276
+            vars.Int = 0;
+            vars.Format = "WOW!";
+            ctx->ItemInput(widget_name);
+            ctx->KeyCharsReplaceEnter("1237");
+            IM_CHECK_EQ(vars.Int, 1237);
 #endif
         }
     };
@@ -3723,7 +3798,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGui::LogToClipboard();
 #ifdef __GNUC__
 #pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-overflow"  // warning: ‘%s’ directive argument is null
+#pragma GCC diagnostic ignored "-Wformat-overflow"  // warning: '%s' directive argument is null
 #endif
         ImGui::Text("%s", (const char*)NULL);
         ImGui::Text("%.*s", 3, (const char*)NULL);
@@ -4162,8 +4237,13 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             // give flickering window time to reappear so MenuAction() does not fail.
             ctx->Yield();
 #endif
+#if IMGUI_VERSION_NUM < 19277
             IM_CHECK_EQ(ctx->UiContext->ActiveId, 0u);
+#endif
             ctx->MenuAction(ImGuiTestAction_Hover, "AAA/BBB/CCC");
+#if IMGUI_VERSION_NUM >= 19277
+            IM_CHECK_EQ(ctx->UiContext->ActiveId, 0u);
+#endif
             IM_CHECK_EQ(vars.Status.Hovered, 1);
             ctx->MouseUp();
             IM_CHECK_EQ(vars.Status.Clicked, 1);
@@ -5394,7 +5474,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiWindow* child_window = ctx->WindowInfo("Assets").Window;
         IM_CHECK(child_window != NULL);
 
-        ctx->WindowResize("", ImVec2(750, 600)); // FIXME: Calculated for 15 item wide (15 * 32) + (15-1+2) * 10 + Parent/Child Padding + Scrollbar
+        ctx->WindowResize("", ImVec2(870, 600)); // FIXME: Calculated for 15 item wide (15 * 40) + (15-1+2) * 10 + Parent/Child Padding + Scrollbar
         ctx->MenuClick("File/Clear items");
         ctx->MenuClick("File/Add 10000 items");
 
@@ -5412,9 +5492,9 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         // Set specific option
         ctx->SetRef("Example: Assets Browser");
         ctx->MenuAction(ImGuiTestAction_Open, "Options");
-        ctx->ItemInputValue("//$FOCUSED/Icon Size", 32.0f);
+        ctx->ItemInputValue("//$FOCUSED/Icon Size", 40.0f);
         ctx->ItemInputValue("//$FOCUSED/Icon Spacing", 10);
-        ctx->ItemInputValue("//$FOCUSED/Icon Hit Spacing", 4);
+        ctx->ItemInputValue("//$FOCUSED/Icon Hit Spacing", 2);
 
         ctx->SetRef(child_window);
         ctx->ScrollToTop("");
@@ -5438,7 +5518,7 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiTestItemInfo item_1 = ctx->ItemInfo("$$1");
         ImGuiTestItemInfo item_2 = ctx->ItemInfo("$$2");
         ctx->MouseMoveToPos((item_1.RectFull.GetCenter() + item_2.RectFull.GetCenter()) * 0.5f);
-        IM_CHECK(ImGui::IsAnyItemHovered() == false);
+        IM_CHECK(ImGui::IsAnyItemHovered() == false); // Assume IconHitSpacing > 0s
         IM_CHECK_EQ(ms_storage->LastSelectionSize, 0);
         ctx->MouseClick(0);
         IM_CHECK_EQ(ms_storage->LastSelectionSize, 0); // Verify we are over void
@@ -5455,19 +5535,73 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ctx->ItemClick("$$0");
         ctx->MouseMove("$$3");
         ctx->MouseDown(0);
+        ctx->MouseMove("$$5");
+        IM_CHECK_EQ(ms_storage->LastSelectionSize, 3);
         ctx->MouseMoveToPos(ImGui::GetMousePos() + ImVec2(0, 1000));
         ctx->SleepNoSkip(2.0f, 0.1f);
         ctx->MouseUp(0);
         IM_CHECK_GT(child_window->Scroll.y, 0.0f);
 
-        ctx->KeyPress(ImGuiKey_Escape);
+        // Establish how many rows are visible
+#if IMGUI_VERSION_NUM >= 19273
+        ctx->ScrollToTop("");
+        ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_A);
+        int item_count = ms_storage->LastSelectionSize;
+        int last_visible = -1;
+        int left_most_idx = 0;
+        int right_most_idx = -1;
+        float right_most_x2 = -FLT_MAX;
+        for (int n = 0; n < item_count; n++)
+        {
+            ImGuiTestItemInfo info = ctx->ItemInfo(Str30f("$$%d", n).c_str(), ImGuiTestOpFlags_NoError);
+            if ((info.StatusFlags & ImGuiItemStatusFlags_Visible) == 0)
+                break;
+            last_visible = n;
+            if (right_most_x2 < info.RectFull.Max.x)
+            {
+                right_most_x2 = info.RectFull.Max.x;
+                right_most_idx = n;
+            }
+        }
+        int count_per_line = (right_most_idx - left_most_idx) + 1;
+        ctx->LogDebug("count: %d, visible: %d, per_line: %d", item_count, last_visible, count_per_line);
+        //int count_per_line = 16;
+        //ctx->LogDebug("count: %d, visible: %d, per_line: %d", item_count, last_visible, count_per_line);
+        IM_CHECK_GT(count_per_line, 8);
+
+        // Make a box selection at the bottom + Mouse Wheeling, with varying pixel offset to stress test effect of clipping on BoxSelect
+        // #7821, #7970, #7994, #8250 are all related to Box-Selecting with various form of clipping meddling in.
+        for (int off = 0; off < 31.0f; off++)
+        {
+            ctx->LogDebug("With off %f\n", (float)off);
+            //if (off == 4) { ctx->CaptureBeginVideo(); }
+            ctx->KeyPress(ImGuiKey_Escape);
+            IM_CHECK_EQ(ms_storage->LastSelectionSize, 0);
+            ctx->MouseMove(Str30f("$$%d", 114/*last_visible - count_per_line * 2 + 3*/).c_str(), ImGuiTestOpFlags_NoScroll | ImGuiTestOpFlags_MoveToEdgeU);
+            ctx->MouseMoveToPos(ImGui::GetMousePos() + ImVec2(0.0f, (float)off));
+            ctx->MouseDown(0);
+            IM_CHECK_EQ(g.ActiveId, ctx->GetID(Str30f("$$%d", 114).c_str()));
+            ctx->MouseMove(Str30f("$$%d", 118/*last_visible - count_per_line * 2 + 7*/).c_str(), ImGuiTestOpFlags_NoScroll | ImGuiTestOpFlags_MoveToEdgeU);
+            ctx->MouseMoveToPos(ImGui::GetMousePos() + ImVec2(0.0f, (float)off));
+            IM_CHECK_EQ(ms_storage->LastSelectionSize, 5);
+            //if (off == 4) IM_SUSPEND_TESTFUNC();
+            //IM_SUSPEND_TESTFUNC();
+            for (int n = 0; n < 3; n++)
+                ctx->MouseWheelY(-2.0f);
+            for (int n = 0; n < 3; n++)
+                ctx->MouseWheelY(+2.0f);
+            ctx->MouseUp(0);
+            //if (off == 4) { ctx->CaptureEndVideo(); }
+            IM_CHECK_EQ(ms_storage->LastSelectionSize, 5); // Anything bigger means we missed some rows.
+        }
+#endif
 
         ctx->MenuUncheck("//Dear ImGui Demo/Examples/Assets Browser");
     };
 #endif
 
 #if IMGUI_VERSION_NUM >= 19114
-    // ## Test box-selection in table with decorations (#7970, #7821 + #9307)
+    // ## Test box-selection in table with decorations (#7970, #7821, #8250, #9307)
     t = IM_REGISTER_TEST(e, "widgets", "widgets_multiselect_boxselect_2");
     struct BoxSelectTestVars { ImGuiTableFlags TableFlags = ImGuiTableFlags_ScrollY; ImGuiMultiSelectFlags MultiSelectFlags = ImGuiMultiSelectFlags_BoxSelect1d; ImGuiSelectionBasicStorage Selection; bool FrozenHeaders = false; };
     t->SetVarsDataType<BoxSelectTestVars>();
@@ -5509,12 +5643,30 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
         ImGuiTable* table = ImGui::TableFindByID(ctx->GetID("Test Window/table1"));
         IM_CHECK(table != NULL);
 
+        auto FindFirstAndLastSelected = [](ImGuiSelectionBasicStorage* selection, int count, int* p_out_first_selected, int* p_out_last_selected)
+        {
+            int first_selected = -1;
+            int last_selected = -1;
+            for (int n = 0; n < count; n++)
+            {
+                if (selection->Contains(n) == false)
+                    continue;
+                if (first_selected == -1)
+                    first_selected = n;
+                last_selected = n;
+            }
+            *p_out_first_selected = first_selected;
+            *p_out_last_selected = last_selected;
+        };
+
         for (int step = 0; step < 4; step++)
         {
             vars.MultiSelectFlags = ImGuiMultiSelectFlags_BoxSelect1d;
             vars.Selection.Clear();
             vars.TableFlags = (step & 1) ? (vars.TableFlags | ImGuiTableFlags_BordersOuter) : (vars.TableFlags & ~ImGuiTableFlags_BordersOuter);
             vars.FrozenHeaders = (step & 2) != 0;
+            ctx->LogInfo("Step %d", step);
+            ctx->Yield();
 
             ctx->SetRef(table->ID);
             ctx->MouseMove("Item 001");
@@ -5522,18 +5674,27 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             //ctx->SetRef("//$FOCUSED");
             ctx->MouseMoveToPos(ImGui::GetIO().MousePos + ImVec2(0, ctx->GetWindowByRef("//Test Window")->Size.y));
             ctx->SleepNoSkip(1.0f, 0.05f);
-            ctx->MouseUp(ImGuiMouseButton_Left);
             IM_CHECK(vars.Selection.Contains(0) == false);
-            int first_selected = 1;
-            int last_selected = 1;
-            for (int n = 1; n < 1000; n++)
-            {
-                if (vars.Selection.Contains(n) == false)
-                    break;
-                last_selected = n;
-            }
+            int first_selected;
+            int last_selected;
+            FindFirstAndLastSelected(&vars.Selection, 1000, &first_selected, &last_selected);
             IM_CHECK(vars.Selection.Size > 1);
+            IM_CHECK_EQ(first_selected, 1);
+            IM_CHECK(last_selected > 1);
             IM_CHECK_EQ(vars.Selection.Size, last_selected - first_selected + 1); // Check no selection gap (#7970)
+            ctx->LogDebug("first_selected = %d, last_selected = %d", first_selected, last_selected);
+            
+#if IMGUI_VERSION_NUM >= 19273
+            // Scroll back up to unselect
+            ctx->MouseMove("Item 003"); // <--- This will defacto scroll and use the equivalent of mouse wheeling while holding the button
+            IM_CHECK_EQ(vars.Selection.Size, 3);
+            ctx->MouseUp(ImGuiMouseButton_Left);
+            FindFirstAndLastSelected(&vars.Selection, 1000, &first_selected, &last_selected);
+            IM_CHECK_EQ(first_selected, 1);
+            IM_CHECK_EQ(last_selected, 3);
+#else
+            ctx->MouseUp(ImGuiMouseButton_Left);
+#endif
 
 #if IMGUI_VERSION_NUM >= 19266
             vars.MultiSelectFlags |= ImGuiMultiSelectFlags_SelectOnClickAlways;
@@ -5637,6 +5798,67 @@ void RegisterTests_Widgets(ImGuiTestEngine* e)
             ImGui::EndTable();
         }
         ImGui::End();
+    };
+#endif
+
+    // ## Test that multi-select + skipping column submissions doesn't break table auto-fit (#9341, #8250)
+#if IMGUI_VERSION_NUM >= 19272
+    t = IM_REGISTER_TEST(e, "table", "widgets_multiselect_cell_width_loss2");
+    t->GuiFunc = [](ImGuiTestContext* ctx)
+    {
+        auto& vars = ctx->GenericVars;
+        ImGui::Begin("Test Window", NULL, ImGuiWindowFlags_NoSavedSettings);
+        ImGuiTableFlags table_flags = ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
+        if (ctx->IsFirstGuiFrame())
+            TableDiscardInstanceAndSettings(ImGui::GetID("table1"));
+        if (ImGui::BeginTable("table1", 2, table_flags, { 400,400 }))
+        {
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoHeaderLabel);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoHeaderLabel);
+            ImGui::TableHeadersRow();
+
+            ImGuiSelectionBasicStorage selection;
+            ImGuiMultiSelectIO* ms_io = NULL;
+            if (vars.Bool1)
+            {
+                ms_io = ImGui::BeginMultiSelect(ImGuiMultiSelectFlags_None, selection.Size, 50);
+                selection.ApplyRequests(ms_io);
+            }
+            for (int row_n = 0; row_n < 50; row_n++)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("Row XXXXX");
+                if (row_n < 10)
+                {
+                    ImGui::TableNextColumn(); // Only some rows submit content to the second column
+                    ImGui::Text("Value Y");
+                }
+            }
+            if (vars.Bool1)
+            {
+                ms_io = ImGui::EndMultiSelect();
+                selection.ApplyRequests(ms_io);
+            }
+
+            ImGuiTable* table = ImGui::GetCurrentTable();
+            if (table->Columns[0].WidthAuto > 0.0f)
+                IM_CHECK_EQ(table->Columns[0].WidthAuto, ImGui::CalcTextSize("Row XXXXX").x);
+            if (table->Columns[1].WidthAuto > 0.0)
+                IM_CHECK_EQ(table->Columns[1].WidthAuto, ImGui::CalcTextSize("Value Y").x);
+
+            ImGui::EndTable();
+        }
+        ImGui::End();
+    };
+    t->TestFunc = [](ImGuiTestContext* ctx)
+    {
+        auto& vars = ctx->GenericVars;
+        ctx->SetRef("Test Window");
+        vars.Bool1 = false;
+        ctx->Yield(3);
+        vars.Bool1 = true;
+        ctx->Yield(3);
     };
 #endif
 

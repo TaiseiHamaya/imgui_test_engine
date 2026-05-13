@@ -5,6 +5,27 @@ CHANGELOG
    Those changes are not all listed here.
 ** For a while this is going to ONLY INCLUDE BREAKING CHANGES.
 
+2026/05/11:
+- TestEngine: fixed ImGuiTestEngine_InstallDefaultCrashHandler() implementation
+  on Unix/POSIX system from calling the crash handler function multiple times. (#96)
+
+2026/04/28:
+- TestEngine: fixed an issue accessing a TabItem out of view when the TabBar does
+  not have scroll buttons.
+
+2026/04/24:
+- TestEngine: IM_TEST_ENGINE_ASSERT() handler (generally wired to app or imgui assert)
+  automatically marks current test as errored.
+
+2026/04/16:
+- TestEngine: added ctx->IsItemVisible() helper.
+- TestEngine: added ImGuiTestOpFlags_NoScroll to prevent e.g. MouseMove() actions
+  from scrolling to get item in better view.
+- TestEngine: fixed calling IM_SUSPEND_TESTFUNC() while in a CaptureBeginVideo() block
+  from running at unthrottled framerate. Among other things the very high-frame rate
+  during interactive suspend would make it easy to miss debug display.
+- TestEngine: ctx->ItemInputValue(float) trim trailing zeroes.
+
 2026/04/13:
 - TestEngine: MouseMove() operations automatically sets ImGuiTestOpFlags_NoCheckHoveredId
   (skips checking HoveredId at the end) when there's an Active item before starting the

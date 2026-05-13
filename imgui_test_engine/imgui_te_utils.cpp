@@ -605,6 +605,21 @@ int ImStrBase64Encode(const unsigned char* src, char* dst, int length)
     return encoded_len;
 }
 
+void ImStrTrimTrailingZeroesFromFloat(char* buf, char* buf_end)
+{
+    // Trim trailing decimal 0
+    const char* decimal_p = strchr(buf, '.');
+    if (decimal_p == NULL)
+        decimal_p = strchr(buf, ',');
+    if (decimal_p == NULL)
+        return;
+    char* p = buf_end;
+    while (p > decimal_p && (p[-1] == '0' || p[-1] == '.' || p[-1] == ','))
+        p--;
+    if (p >= decimal_p)
+        *p = 0;
+}
+
 //-----------------------------------------------------------------------------
 // Parsing Helpers
 //-----------------------------------------------------------------------------
@@ -1148,7 +1163,11 @@ void ImGui::ItemErrorFrame(ImU32 col)
     ImDrawList* drawlist = GetWindowDrawList();
     ImGuiStyle& style = GetStyle();
     // FIXME: GetItemRectMin() / GetItemRectMax() will include label. NavRect is not probably defined :(
+#if IMGUI_VERSION_NUM < 19276
     drawlist->AddRect(g.LastItemData.NavRect.Min, g.LastItemData.NavRect.Max, GetColorU32(col), style.FrameRounding, ImDrawFlags_None, ImMax(1.0f, style.FrameBorderSize));
+#else
+    drawlist->AddRect(g.LastItemData.NavRect.Min, g.LastItemData.NavRect.Max, GetColorU32(col), style.FrameRounding, ImMax(1.0f, style.FrameBorderSize));
+#endif
 }
 
 bool ImGui::InputText(const char* label, Str* str, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data)

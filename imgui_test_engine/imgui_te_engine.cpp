@@ -929,6 +929,10 @@ static void ImGuiTestEngine_PreEndFrame(ImGuiTestEngine* engine, ImGuiContext* u
     if (engine->IO.ConfigRunSpeed == ImGuiTestRunSpeed_Fast && engine->IO.IsRunningTests)
         if (engine->TestContext && (engine->TestContext->RunFlags & ImGuiTestRunFlags_GuiFuncOnly) == 0)
             engine->IO.IsRequestingMaxAppSpeed = true;
+
+    // Suspend - via IM_SUSPEND_TESTFUNC() macros - always revert to normal speed so we don't miss frames.
+    if (engine->TestContext && engine->TestContext->TestOutput->Status == ImGuiTestStatus_Suspended)
+        engine->IO.IsRequestingMaxAppSpeed = false;
 }
 
 static void ImGuiTestEngine_PreRender(ImGuiTestEngine* engine, ImGuiContext* ui_ctx)
@@ -2119,7 +2123,7 @@ void ImGuiTestEngine_InstallDefaultCrashHandler()
     // Install a crash handler to relevant signals.
     struct sigaction action = {};
     action.sa_handler = ImGuiTestEngine_CrashHandlerUnix;
-    action.sa_flags = SA_SIGINFO;
+    action.sa_flags = SA_RESETHAND; // one-shot
     sigaction(SIGILL, &action, nullptr);
     sigaction(SIGABRT, &action, nullptr);
     sigaction(SIGFPE, &action, nullptr);
@@ -2405,7 +2409,11 @@ void ImGuiTestEngine_AssertLog(const char* expr, const char* file, const char* f
             ctx->LogError("Assert: '%s'", expr);
             ctx->LogWarning("In %s:%d, function %s()", file, line, function);
             if (ImGuiTest* test = ctx->Test)
+            {
                 ctx->LogWarning("While running test: %s %s", test->Category, test->Name);
+                if (test->Output.Status == ImGuiTestStatus_Running)
+                    test->Output.Status = ImGuiTestStatus_Error;
+            }
         }
 }
 
